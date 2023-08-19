@@ -4,7 +4,6 @@ import * as child_process from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import * as dotenv from 'dotenv';
-import { Configuration as PuppeteerConfiguration } from 'puppeteer';
 import { PrismaERDConfig } from 'types/generator';
 import {
     DML,
@@ -13,6 +12,7 @@ import {
     DMLModel,
     DMLField,
 } from 'types/dml';
+import { SVGRendererMode, SVGRendererOptions } from 'types/svg';
 
 dotenv.config(); // Load the environment variables
 
@@ -71,182 +71,29 @@ export async function parseDatamodel(
     return getDataModelFieldWithoutParsing(parsed);
 }
 
-function renderDml(dml: DML, options?: DMLRendererOptions) {
+function renderSVG(dml: DML, options?: SVGRendererOptions) {
     const {
-        tableOnly = false,
+        renderMode = 'links',
         ignoreEnums = false,
-        includeRelationFromFields = false,
-        disableEmoji = false,
     } = options ?? {};
-
-    const diagram = 'erDiagram';
 
     // Combine Models and Types as they are pretty similar
     const modellikes = dml.models.concat(dml.types);
-    const enums =
-        tableOnly || ignoreEnums
-            ? ''
-            : dml.enums
-                  .map(
-                      (model: DMLEnum) => `
-        ${model.dbName || model.name} {
-            ${model.values
-                .map(
-                    (value) =>
-                        `${value.name || value.dbName} ${
-                            value.dbName || value.name
-                        }`
-                )
-                .join('\n')}
-        }
-    `
-                  )
-                  .join('\n\n');
 
-    const pkSigil = disableEmoji ? '"PK"' : '"🗝️"';
-    const nullableSigil = disableEmoji ? '"nullable"' : '"❓"';
-    const classes = modellikes
-        .map(
-            (model) =>
-                `  "${model.dbName || model.name}" {
-${
-    tableOnly
-        ? ''
-        : model.fields
-              .filter(isFieldShownInSchema(model, includeRelationFromFields))
-              // the replace is a hack to make MongoDB style ID columns like _id valid for Mermaid
-              .map((field) => {
-                  return `    ${field.type.trimStart()} ${field.name.replace(
-                      /^_/,
-                      'z_'
-                  )} ${
-                      field.isId ||
-                      model.primaryKey?.fields?.includes(field.name)
-                          ? pkSigil
-                          : ''
-                  }${field.isRequired ? '' : nullableSigil}`;
-              })
-              .join('\n')
-}
-    }
-  `
-        )
-        .join('\n\n');
-
-    let relationships = '';
     for (const model of modellikes) {
         for (const field of model.fields) {
             const isEnum = field.kind === 'enum';
-            if (isEnum && (tableOnly || ignoreEnums)) {
-                continue;
-            }
-
-            const relationshipName = `${isEnum ? 'enum:' : ''}${field.name}`;
-            const thisSide = `"${model.dbName || model.name}"`;
-            const otherSide = `"${
-                modellikes.find((ml) => ml.name === field.type)?.dbName ||
-                field.type
-            }"`;
-            // normal relations
             if (
-                (field.relationFromFields &&
-                    field.relationFromFields.length > 0) ||
-                isEnum
+                isEnum &&
+                (renderMode === 'tables' || ignoreEnums)
             ) {
-                let thisSideMultiplicity = '||';
-                if (field.isList) {
-                    thisSideMultiplicity = '}o';
-                } else if (!field.isRequired) {
-                    thisSideMultiplicity = '|o';
-                }
-
-                const otherModel = modellikes.find(
-                    (model) => model.name === otherSide
-                );
-
-                const otherField = otherModel?.fields.find(
-                    ({ relationName }) => relationName === field.relationName
-                );
-
-                let otherSideMultiplicity = thisSideMultiplicity;
-                if (otherField?.isList) {
-                    thisSideMultiplicity = 'o{';
-                } else if (!otherField?.isRequired) {
-                    thisSideMultiplicity = 'o|';
-                }
-
-                relationships += `    ${thisSide} ${thisSideMultiplicity}--${otherSideMultiplicity} ${
-                    otherModel?.dbName || otherSide
-                } : "${relationshipName}"\n`;
-            }
-            // many to many
-            else if (
-                modellikes.find(
-                    (m) => m.name === field.type || m.dbName === field.type
-                ) &&
-                field.relationFromFields?.length === 0
-                // && field.relationToFields?.length
-            ) {
-                relationships += `    ${thisSide} o{--}o ${otherSide} : "${field.name}"\n`;
-            }
-            // composite types
-            else if (field.kind == 'object') {
-                const otherSideCompositeType = dml.types.find(
-                    (model) =>
-                        model.name
-                            .replace(/^_/, 'z_') // replace leading underscores
-                            .replace(/\s/g, '') // remove spaces === otherSide
-                );
-                console.log(otherSide, otherSideCompositeType);
-                if (otherSideCompositeType) {
-                    // most logic here is a copy/paste from the normal relation logic
-                    // TODO extract and reuse
-                    let thisSideMultiplicity = '||';
-                    if (field.isList) {
-                        thisSideMultiplicity = '}o';
-                    } else if (!field.isRequired) {
-                        thisSideMultiplicity = '|o';
-                    }
-
-                    const otherField = otherSideCompositeType?.fields.find(
-                        ({ relationName }) =>
-                            relationName === field.relationName
-                    );
-
-                    let otherSideMultiplicity = thisSideMultiplicity;
-                    if (otherField?.isList) {
-                        thisSideMultiplicity = 'o{';
-                    } else if (!otherField?.isRequired) {
-                        thisSideMultiplicity = 'o|';
-                    }
-
-                    relationships += `    ${thisSide} ${thisSideMultiplicity}--${otherSideMultiplicity} ${
-                        otherSideCompositeType.dbName || otherSide
-                    } : "${relationshipName}"\n`;
-                }
+                continue;
             }
         }
     }
 
-    return diagram + '\n' + enums + '\n' + classes + '\n' + relationships;
+    return require('./builder').buildSvg(modellikes);
 }
-
-const isFieldShownInSchema =
-    (model: DMLModel, includeRelationFromFields: boolean) =>
-    (field: DMLField) => {
-        if (includeRelationFromFields) {
-            return field.kind !== 'object';
-        }
-
-        return (
-            field.kind !== 'object' &&
-            !model.fields.find(
-                ({ relationFromFields }) =>
-                    relationFromFields &&
-                    relationFromFields.includes(field.name)
-            )
-        );
-    };
 
 export const mapPrismaToDb = (dmlModels: DMLModel[], dataModel: string) => {
     const splitDataModel = dataModel
@@ -373,29 +220,17 @@ export default async (options: GeneratorOptions) => {
             console.log(`applied @map to fields written to ${mapAppliedFile}`);
         }
 
-        const mermaid = renderDml(dml, {
-            tableOnly,
+        const svg = renderSVG(dml, {
             ignoreEnums,
-            includeRelationFromFields,
-            disableEmoji,
         });
-        if (debug && mermaid) {
-            const mermaidFile = path.resolve('prisma/debug/3-mermaid.mmd');
-            fs.writeFileSync(mermaidFile, mermaid);
-            console.log(`mermaid written to ${mermaidFile}`);
+
+        if (debug) {
+            const svgFile = path.resolve('prisma/debug/3-svg.svg');
+            fs.writeFileSync(svgFile, svg);
+            console.log(`svg written to ${svgFile}`);
         }
 
-        if (!mermaid)
-            throw new Error('failed to construct mermaid instance from dml');
-
-        if (output.endsWith('.md'))
-            return fs.writeFileSync(
-                output,
-                '```mermaid' + `\n` + mermaid + '```' + `\n`
-            );
-
-        const tempMermaidFile = path.resolve(path.join(tmpDir, 'prisma.mmd'));
-        fs.writeFileSync(tempMermaidFile, mermaid);
+        fs.writeFileSync(output, svg);
 
         // default config parameters https://github.com/mermaid-js/mermaid/blob/master/packages/mermaid/src/defaultConfig.ts
         const tempConfigFile = path.resolve(path.join(tmpDir, 'config.json'));
@@ -406,91 +241,6 @@ export default async (options: GeneratorOptions) => {
                 maxTextSize: 90000,
             })
         );
-
-        // Generator option to adjust puppeteer
-        let puppeteerConfig = config.puppeteerConfig;
-        if (puppeteerConfig && !fs.existsSync(puppeteerConfig)) {
-            throw new Error(
-                `Puppeteer config file "${puppeteerConfig}" does not exist`
-            );
-        }
-
-        // if no config is provided, use a default
-        if (!puppeteerConfig) {
-            // Referencing default mermaid-js puppeteer-config.json
-            // https://github.com/mermaid-js/mermaid-cli/blob/master/puppeteer-config.json
-            const tempPuppeteerConfigFile = path.resolve(
-                path.join(tmpDir, 'puppeteerConfig.json')
-            );
-            const executablePath = '/usr/bin/chromium-browser';
-            let puppeteerConfigJson: PuppeteerConfiguration & {
-                args: string[];
-            } = {
-                logLevel: debug ? 'warn' : 'error',
-                executablePath,
-                args: ['--no-sandbox'],
-            };
-            // if MacOS M1/M2, provide your own path to chromium
-            if (os.platform() === 'darwin' && os.arch() === 'arm64') {
-                try {
-                    const executablePath = child_process
-                        .execSync('which chromium')
-                        .toString()
-                        .replace('\n', '');
-                    if (!executablePath) {
-                        throw new Error(
-                            'Could not find chromium executable. Refer to https://github.com/keonik/prisma-erd-generator#issues for next steps.'
-                        );
-                    }
-                    puppeteerConfigJson.executablePath = executablePath;
-                } catch (error) {
-                    console.error(error);
-                    console.log(
-                        `\nPrisma ERD Generator: Unable to find chromium path for you MacOS arm64 machine. Attempting to use the default at ${executablePath}. To learn more visit https://github.com/keonik/prisma-erd-generator#-arm64-users-\n`
-                    );
-                }
-            }
-            fs.writeFileSync(
-                tempPuppeteerConfigFile,
-                JSON.stringify(puppeteerConfigJson)
-            );
-            puppeteerConfig = tempPuppeteerConfigFile;
-        }
-        if (config.mmdcPath) {
-            if (!fs.existsSync(mermaidCliNodePath)) {
-                throw new Error(
-                    `\nMermaid CLI provided path does not exist. \n${mermaidCliNodePath}`
-                );
-            }
-        } else if (!fs.existsSync(mermaidCliNodePath)) {
-            const findMermaidCli = child_process
-                .execSync('find ../.. -name mmdc')
-                .toString()
-                .split('\n')
-                .filter((path) => path)
-                .pop();
-            if (!findMermaidCli || !fs.existsSync(findMermaidCli)) {
-                throw new Error(
-                    `Expected mermaid CLI at \n${mermaidCliNodePath}\n\nor\n${findMermaidCli}\n but this package was not found.`
-                );
-            } else {
-                mermaidCliNodePath = path.resolve(findMermaidCli);
-            }
-        }
-
-        const mermaidCommand = `"${mermaidCliNodePath}" -i "${tempMermaidFile}" -o "${output}" -t ${theme} -c "${tempConfigFile}" -p "${puppeteerConfig}"`;
-        if (debug && mermaidCommand)
-            console.log('mermaid command: ', mermaidCommand);
-        child_process.execSync(mermaidCommand, {
-            stdio: 'ignore',
-        });
-
-        // throw error if file was not created
-        if (!fs.existsSync(output)) {
-            throw new Error(
-                `Issue generating ER Diagram. Expected ${output} to be created`
-            );
-        }
     } catch (error) {
         console.error(error);
         throw error;

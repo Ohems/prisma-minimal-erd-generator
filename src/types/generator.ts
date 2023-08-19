@@ -6,5 +6,4 @@ export interface PrismaERDConfig {
     ignoreEnums?: string;
     includeRelationFromFields?: string;
     erdDebug?: string;
-    puppeteerConfig?: string;
 }
