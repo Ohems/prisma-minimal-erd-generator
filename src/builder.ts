@@ -1,12 +1,27 @@
 import { digl } from '@crinkles/digl';
-import { Edge } from '@crinkles/digl/dist/types';
+import { Edge, Graph } from '@crinkles/digl/dist/types';
 import { DMLModel } from 'types/dml';
 
-interface VerticalLine {}
+interface VerticalLine {
+    x: number;
+    previousElement: HorizontalLine;
+    nextElement: HorizontalLine;
+}
 
-interface HorizontalLine {}
+interface HorizontalLine {
+    y: number;
+    start: VerticalLine | ConnectionPoint;
+    end: VerticalLine | ConnectionPoint;
+}
+
+interface ConnectionPoint {
+    x: number;
+    y: number;
+    name: string;
+}
 
 interface Connection {
+    relationName: string;
     source: string;
     target: string;
     fromLayer: number;
@@ -35,15 +50,17 @@ interface Tree {
     lineLayers: HorizontalLine[][][];
 }
 
-function buildModelSvg(element: Element) {
+function buildModelSvg(element: Element | HorizontalLine) {
     const MARGIN = 2;
     const LINE_THICKNESS = 1;
 
-    const { x, y, model } = element;
-
-    let _y = y;
+    const { x, y, model } = element as Element;
 
     if (model) {
+        let _y = y;
+
+        const connectionPoints: ConnectionPoint[] = [];
+
         let width = model.name.length * 8 + MARGIN * 2;
         let height = 12 + MARGIN * 2;
 
@@ -77,12 +94,20 @@ function buildModelSvg(element: Element) {
                     linkingField.name
                 }</text>`
             );
+
+            connectionPoints.push({
+                x: x + width,
+                y: _y + (12 + MARGIN) / 2,
+                name: linkingField.relationName as string,
+            });
+
             _y += 12 + MARGIN;
         }
 
         return {
             width,
             height,
+            connectionPoints,
             svgLines: [
                 `<rect x="${x}" y="${y}" width="${width}" height="${height}" style="fill:white;stroke:black" />`,
                 `<text x="${x + width / 2}" y="${
@@ -96,11 +121,13 @@ function buildModelSvg(element: Element) {
         };
     }
 
+    const { start, end } = element as HorizontalLine;
+
     return {
         width: 0,
         height: MARGIN * 2 + LINE_THICKNESS,
         svgLines: [
-            `<line x1="${x}" y1="${y}" x2="${x + element.width}" y2="${y}" stroke="black" />`
+            `<line x1="${start.x}" y1="${y}" x2="${end.x}" y2="${y}" stroke="black" />`,
         ],
     };
 }
@@ -118,6 +145,37 @@ function buildSvgLines(trees: Tree[]) {
     }
 
     return svgLines;
+}
+
+function buildConnections(graph: Graph, trees: Tree[]) {
+    // Build connections
+    for (let treeIdx = 0; treeIdx < trees.length; treeIdx++) {
+        for (
+            let layerIdx = 0;
+            layerIdx < trees[treeIdx].layers.length;
+            layerIdx++
+        ) {
+            for (const element of trees[treeIdx].layers[layerIdx].elements) {
+                for (const field of element.model?.fields || []) {
+                    for (const source of field.relationFromFields || []) {
+                        for (const target of field.relationToFields || []) {
+                            const conn = {
+                                relationName: field.relationName || '',
+                                source,
+                                target,
+                                fromLayer: layerIdx,
+                                toLayer: graph[treeIdx]
+                                    .findIndex((a) =>
+                                        a.findIndex((b) => b === field.type) >= 0
+                                    ),
+                            };
+                            trees[treeIdx].connections.push(conn);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 function resolveLocations(trees: Tree[]) {
@@ -166,7 +224,7 @@ function resolveLocations(trees: Tree[]) {
 
             for (const element of layer.elements) {
                 // Center all of the elements within the layer
-                element.x += (layer.width - element.width) / 2
+                element.x += (layer.width - element.width) / 2;
             }
 
             x += layer.width;
@@ -199,9 +257,7 @@ export function buildSvg(models: DMLModel[]) {
         }
     }
 
-    console.log(edges);
     const graph = digl(edges);
-    console.log(JSON.stringify(graph, null, 2));
 
     const layers: DMLModel[][][] = graph.map((g) =>
         g.map((t) =>
@@ -239,6 +295,7 @@ export function buildSvg(models: DMLModel[]) {
         lineLayers: [[[]]],
     }));
 
+    buildConnections(graph, trees);
     const { width, height } = resolveLocations(trees);
     const svgLines = buildSvgLines(trees);
 
